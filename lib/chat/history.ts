@@ -1,6 +1,6 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import { MAX_HISTORY_MESSAGES, MAX_USER_MESSAGE_CHARS } from "@/lib/agent/config";
-import { EMPLOYER_CONTEXT_PREFIX } from "@/lib/chat/employerContext";
+import { SETTINGS_CONTEXT_PREFIXES } from "@/lib/chat/settingsContext";
 import type { MessageParam } from "@/lib/chat/protocol";
 
 type ContentBlock = Anthropic.Beta.BetaContentBlock;
@@ -34,8 +34,8 @@ export function validateHistory(messages: unknown): string | null {
     } else if (role === "assistant") {
       if (!Array.isArray(content)) return `messages[${i}] content must be an array`;
     } else if (role === "system") {
-      // Only the app's own employer-list messages.
-      if (typeof content !== "string" || !content.startsWith(EMPLOYER_CONTEXT_PREFIX)) {
+      // Only the app's own saved-settings messages.
+      if (typeof content !== "string" || !SETTINGS_CONTEXT_PREFIXES.some((p) => content.startsWith(p))) {
         return `messages[${i}] is not a recognized system message`;
       }
     } else {

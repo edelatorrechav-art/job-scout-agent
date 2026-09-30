@@ -1,10 +1,12 @@
 import type { ChatEvent, MessageParam } from "@/lib/chat/protocol";
 import type { Employer } from "@/lib/employers/types";
+import type { LocationPref } from "@/lib/location/types";
 
 export interface ChatHandlers {
   onText: (text: string) => void;
   onStatus: (text: string) => void;
   onEmployers: (employers: Employer[]) => void;
+  onLocation: (location: LocationPref | null) => void;
 }
 
 export type ChatResult =
@@ -13,13 +15,14 @@ export type ChatResult =
   | { type: "error"; message: string };
 
 /**
- * Sends the conversation and saved employer list to /api/chat, calling the
+ * Sends the conversation and saved settings to /api/chat, calling the
  * handlers as events stream in. Resolves with how the turn ended. Throws only
  * on abort.
  */
 export async function streamChat(
   messages: MessageParam[],
   employers: Employer[],
+  location: LocationPref | null,
   handlers: ChatHandlers,
   signal: AbortSignal,
 ): Promise<ChatResult> {
@@ -28,7 +31,7 @@ export async function streamChat(
     response = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ messages, employers }),
+      body: JSON.stringify({ messages, employers, location }),
       signal,
     });
   } catch (error) {
@@ -58,6 +61,7 @@ export async function streamChat(
       if (event.type === "text") handlers.onText(event.text);
       else if (event.type === "status") handlers.onStatus(event.text);
       else if (event.type === "employers") handlers.onEmployers(event.employers);
+      else if (event.type === "location") handlers.onLocation(event.location);
       else return event;
     }
   }

@@ -6,6 +6,7 @@ import { Markdown } from "@/components/Markdown";
 import { streamChat } from "@/lib/chat/client";
 import type { MessageParam } from "@/lib/chat/protocol";
 import { getEmployers, saveEmployers, useEmployers } from "@/lib/employers/store";
+import { getLocation, saveLocation, useLocation } from "@/lib/location/store";
 
 interface Turn {
   id: number;
@@ -20,8 +21,8 @@ interface Turn {
 const EXAMPLES = [
   "Track Stripe, Airbnb, and Datadog",
   "Find accountant roles at my companies",
+  "I only want jobs in Oklahoma City",
   "How do I negotiate a higher base salary?",
-  "What questions should I ask at the end of an interview?",
 ];
 
 export function ChatWindow() {
@@ -32,6 +33,7 @@ export function ChatWindow() {
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const employers = useEmployers();
+  const location = useLocation();
   const abortRef = useRef<AbortController | null>(null);
   const nextId = useRef(0);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -65,12 +67,14 @@ export function ChatWindow() {
       const result = await streamChat(
         messages,
         getEmployers(),
+        getLocation(),
         {
           onText: (chunk) =>
             updateTurn(replyId, (t) => ({ text: t.text + chunk, progress: undefined })),
           onStatus: (progress) => updateTurn(replyId, () => ({ progress })),
           // Saved right away, even if the reply later fails: the change happened.
           onEmployers: saveEmployers,
+          onLocation: saveLocation,
         },
         controller.signal,
       );
@@ -116,8 +120,10 @@ export function ChatWindow() {
       </header>
       <EmployerBar
         employers={employers}
+        location={location}
         disabled={busy}
         onRemove={(name) => saveEmployers(employers.filter((e) => e.name !== name))}
+        onClearLocation={() => saveLocation(null)}
       />
 
       <main className="flex-1 overflow-y-auto px-4 py-6">

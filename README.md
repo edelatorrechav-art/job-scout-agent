@@ -24,11 +24,18 @@ On Vercel, add the same variables under **Project Settings → Environment Varia
 
 ### Job search
 
-- `find_open_roles` (`lib/agent/tools/findOpenRoles.ts`) takes a job type, an optional location, an optional subset of saved companies, and an optional per-company limit (default 5, max 10; 40 postings max per search).
+- `find_open_roles` (`lib/agent/tools/findOpenRoles.ts`) takes a job type, an optional location and remote flag, an optional subset of saved companies, and an optional per-company limit (default 5, max 10; 40 postings max per search).
 - For each company with a job board, a Tavily search restricted to the board's domain finds candidate postings; `lib/jobs/boardScope.ts` keeps only pages under that company's board (a hosted board like `greenhouse.io/stripe` must match the path, since the same host serves other companies).
 - Each posting is read with Firecrawl's JSON extraction (`lib/services/firecrawl.ts`) for title, location, and pay. Pages that aren't a single posting are dropped. Missing pay or location becomes "Not listed"; the link is always the URL that was read, never one taken from the page.
 - Searches and page reads run in parallel with concurrency limits, and the tool stops at ~75 seconds, reporting anything unread. The chat route's `maxDuration` is 300 seconds.
 - Claude presents the results as per-company tables (Title | Location | Pay | Link), drops titles that don't match the requested role, and notes companies with no results.
+
+### Location filter
+
+- A location can be given for one search ("financial analyst jobs in Oklahoma City") or saved as a standing preference ("I only want jobs in Oklahoma") with `set_location_preference`. The preference lives in `localStorage` (`lib/location/store.ts`), shows as a chip under the header (× clears it), and applies to every search until changed. A location in the request overrides it for that search; "anywhere" ignores it once.
+- The location goes into the Tavily query. Extra postings are read per company (2× the limit, max 15) since some get filtered out.
+- `lib/location/match.ts` keeps postings whose stated location matches: a state ("Oklahoma" or "OK") matches any city in it, "City, ST" requires the city and rejects other states, and remote-only postings are kept only when remote was asked for. Postings with no stated location are dropped when a filter is active. Counts of dropped postings are reported.
+- Results start with "Filtered to: …". With no location set, Claude mentions that the user can narrow it down.
 
 ### Employer list
 
@@ -36,7 +43,7 @@ On Vercel, add the same variables under **Project Settings → Environment Varia
 - `update_employer_list` (`lib/agent/tools/updateEmployerList.ts`) has three modes: `add` (default), `replace` (only when the user clearly asks to start over), and `remove`. After an add or replace the list must hold at least 2 companies (max 25).
 - New companies are looked up with Tavily; `lib/employers/boardResolver.ts` picks the job board from the results, preferring hosted boards (Greenhouse, Lever, Ashby, Workday, …) whose account name matches the company, then a careers page on the company's own domain. Companies with no board found stay on the list; adding them again retries the lookup.
 - The route runs the tool loop itself (`app/api/chat/route.ts`) and streams `status` and `employers` events so the UI shows progress and saves changes immediately.
-- Each turn, if the list changed since Claude last saw it, the server appends a `[Tracked employers]` system message with the current list. It's returned to the browser and kept in the history, which stays append-only.
+- Each turn, if the saved settings (employers + location) changed since Claude last saw them, the server appends a `[Saved settings]` system message (`lib/chat/settingsContext.ts`). It's returned to the browser and kept in the history, which stays append-only.
 
 ## Roadmap
 

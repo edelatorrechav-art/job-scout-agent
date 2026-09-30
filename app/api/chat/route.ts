@@ -9,10 +9,11 @@ import {
 } from "@/lib/agent/config";
 import { SYSTEM_PROMPT } from "@/lib/agent/systemPrompt";
 import { runTool, TOOLS } from "@/lib/agent/tools";
-import { employerContextMessage, lastEmployerContext } from "@/lib/chat/employerContext";
+import { lastSettingsContext, settingsContextMessage } from "@/lib/chat/settingsContext";
 import { echoableContent, validateHistory } from "@/lib/chat/history";
 import type { ChatEvent, ChatRequest, MessageParam } from "@/lib/chat/protocol";
 import { isEmployerList, type Employer } from "@/lib/employers/types";
+import { isLocationPref, type LocationPref } from "@/lib/location/types";
 
 export const runtime = "nodejs";
 // A job search reads many pages (the tool itself stops at ~75s) plus two
@@ -40,6 +41,10 @@ export async function POST(request: Request) {
   if (!isEmployerList(body.employers ?? [])) {
     return Response.json({ error: "The saved employer list is invalid." }, { status: 400 });
   }
+  const location = body.location ?? null;
+  if (location !== null && !isLocationPref(location)) {
+    return Response.json({ error: "The saved location is invalid." }, { status: 400 });
+  }
 
   const encoder = new TextEncoder();
   const stream = new ReadableStream<Uint8Array>({
@@ -48,7 +53,7 @@ export async function POST(request: Request) {
         controller.enqueue(encoder.encode(JSON.stringify(event) + "\n"));
 
       try {
-        await runAgent(body.messages, body.employers ?? [], send, request.signal);
+        await runAgent(body.messages, body.employers ?? [], location, send, request.signal);
       } catch (error) {
         if (!request.signal.aborted) {
           console.error("chat request failed", error);
@@ -75,16 +80,18 @@ export async function POST(request: Request) {
 async function runAgent(
   history: MessageParam[],
   initialEmployers: Employer[],
+  initialLocation: LocationPref | null,
   send: (event: ChatEvent) => void,
   signal: AbortSignal,
 ) {
   let employers = initialEmployers;
+  let location = initialLocation;
   const added: MessageParam[] = [];
 
-  // Tell Claude the current employer list, but only when it changed since the
-  // last time it was stated (the user can edit it outside the chat).
-  const context = employerContextMessage(employers);
-  if (context.content !== lastEmployerContext(history)) added.push(context);
+  // Tell Claude the saved settings, but only when they changed since the last
+  // time they were stated (the user can edit them outside the chat).
+  const context = settingsContextMessage(employers, location);
+  if (context.content !== lastSettingsContext(history)) added.push(context);
 
   let sentText = false;
   for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
@@ -132,16 +139,21 @@ async function runAgent(
       throw new Error("tool call was cut off at max_tokens");
     }
 
-    // Run sequentially: each call sees the list as the previous one left it.
+    // Run sequentially: each call sees the settings as the previous one left them.
     const results: Anthropic.Beta.BetaToolResultBlockParam[] = [];
     for (const use of toolUses) {
       const outcome = await runTool(use.name, use.input, {
         employers,
+        location,
         onStatus: (text) => send({ type: "status", text }),
       });
       if (outcome.employers) {
         employers = outcome.employers;
         send({ type: "employers", employers });
+      }
+      if (outcome.location) {
+        location = outcome.location.value;
+        send({ type: "location", location });
       }
       results.push({
         type: "tool_result",
