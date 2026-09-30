@@ -2,13 +2,13 @@
 
 A chat agent that finds open jobs at companies you choose. Built with Next.js (App Router), Tailwind CSS, and the Anthropic Claude API; deployed on Vercel.
 
-**Status: phase 2** — streaming chat plus employer tracking (`update_employer_list`). Job search (`find_open_roles`) comes next.
+**Status: phase 3** — streaming chat, employer tracking (`update_employer_list`), and job search (`find_open_roles`).
 
 ## Setup
 
 ```bash
 npm install
-cp .env.example .env.local   # then fill in ANTHROPIC_API_KEY and TAVILY_API_KEY
+cp .env.example .env.local   # then fill in all three API keys
 npm run dev                  # http://localhost:3000
 ```
 
@@ -22,6 +22,14 @@ On Vercel, add the same variables under **Project Settings → Environment Varia
 - `lib/agent/systemPrompt.ts` — kept free of dates or per-user data so it stays in the prompt cache.
 - `lib/chat/history.ts` — validates what the browser sends, and prepares assistant content for echoing back.
 
+### Job search
+
+- `find_open_roles` (`lib/agent/tools/findOpenRoles.ts`) takes a job type, an optional location, an optional subset of saved companies, and an optional per-company limit (default 5, max 10; 40 postings max per search).
+- For each company with a job board, a Tavily search restricted to the board's domain finds candidate postings; `lib/jobs/boardScope.ts` keeps only pages under that company's board (a hosted board like `greenhouse.io/stripe` must match the path, since the same host serves other companies).
+- Each posting is read with Firecrawl's JSON extraction (`lib/services/firecrawl.ts`) for title, location, and pay. Pages that aren't a single posting are dropped. Missing pay or location becomes "Not listed"; the link is always the URL that was read, never one taken from the page.
+- Searches and page reads run in parallel with concurrency limits, and the tool stops at ~75 seconds, reporting anything unread. The chat route's `maxDuration` is 300 seconds.
+- Claude presents the results as per-company tables (Title | Location | Pay | Link), drops titles that don't match the requested role, and notes companies with no results.
+
 ### Employer list
 
 - Stored in the browser's `localStorage` (`lib/employers/store.ts`) and sent with every message. Shown as chips under the header; × removes a company.
@@ -34,6 +42,6 @@ On Vercel, add the same variables under **Project Settings → Environment Varia
 
 1. ✅ Streaming chat, no tools
 2. ✅ Employer list in `localStorage` + `update_employer_list` (Tavily): adds by default, replaces only on explicit request, supports removing a company
-3. `find_open_roles` (Tavily + Firecrawl): up to 5 postings per company by default, more on request
+3. ✅ `find_open_roles` (Tavily + Firecrawl): up to 5 postings per company by default, more on request
 4. Results table, tool status messages, employer sidebar
 5. Hardening: rate limiting, timeouts, test prompts

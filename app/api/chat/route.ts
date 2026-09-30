@@ -15,8 +15,9 @@ import type { ChatEvent, ChatRequest, MessageParam } from "@/lib/chat/protocol";
 import { isEmployerList, type Employer } from "@/lib/employers/types";
 
 export const runtime = "nodejs";
-// Room for tool calls (job board lookups). Vercel caps this per plan.
-export const maxDuration = 60;
+// A job search reads many pages (the tool itself stops at ~75s) plus two
+// Claude turns. 300s is the Vercel Hobby maximum with Fluid compute.
+export const maxDuration = 300;
 
 const client = new Anthropic();
 

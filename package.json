@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.130.0",
+    "@mendable/firecrawl-js": "^4.42.1",
     "@tavily/core": "^0.7.13",
     "next": "16.3.8",
     "react": "19.2.8",

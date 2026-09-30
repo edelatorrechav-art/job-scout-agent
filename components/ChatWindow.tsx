@@ -19,8 +19,8 @@ interface Turn {
 
 const EXAMPLES = [
   "Track Stripe, Airbnb, and Datadog",
+  "Find accountant roles at my companies",
   "How do I negotiate a higher base salary?",
-  "How should I tailor my resume for a product manager role?",
   "What questions should I ask at the end of an interview?",
 ];
 
@@ -125,8 +125,8 @@ export function ChatWindow() {
           <div className="mt-16 text-center">
             <p className="text-2xl font-semibold">Let&apos;s close the books on your job search</p>
             <p className="mt-2 text-zinc-500">
-              Tell me which companies to track and I&apos;ll find their job boards.
-              Job search across them is coming soon. I&apos;ll keep an eye on the pay.
+              Tell me which companies to track, then ask what roles to look for.
+              I&apos;ll search their job boards and keep an eye on the pay.
             </p>
             <div className="mt-8 flex flex-col items-center gap-2">
               {EXAMPLES.map((example) => (
