@@ -17,7 +17,7 @@ export interface ChatRequest {
 // The response is newline-delimited JSON: one ChatEvent per line.
 export type ChatEvent =
   | { type: "text"; text: string }
-  // Progress while a tool runs, e.g. "Looking up job boards…"
+  // Progress while a tool runs, e.g. "Auditing 3 job boards…"
   | { type: "status"; text: string }
   // The employer list changed; save it.
   | { type: "employers"; employers: Employer[] }

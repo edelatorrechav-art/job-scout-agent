@@ -109,7 +109,7 @@ export async function runUpdateEmployerList(
   }
 
   if (toResolve.length > 0) {
-    ctx.onStatus(`Looking up job boards for ${toResolve.map((t) => t.name).join(", ")}…`);
+    ctx.onStatus(`Opening the books on ${toResolve.map((t) => t.name).join(", ")}…`);
   }
   const resolved = await Promise.all(
     toResolve.map(async (t) => {

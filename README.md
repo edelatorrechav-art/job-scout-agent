@@ -1,8 +1,12 @@
-# Job Scout
+# Job Ledger
 
 A chat agent that finds open jobs at companies you choose. Built with Next.js (App Router), Tailwind CSS, and the Anthropic Claude API; deployed on Vercel.
 
 **Status: phase 3** — streaming chat, employer tracking (`update_employer_list`), and job search (`find_open_roles`).
+
+## Design
+
+Finance-app look: deep navy (`#0F2A44`) header and accents, emerald (`#10B981`) highlights and buttons, light gray (`#F8FAFC`) background, white cards, Inter font. Colors are Tailwind theme tokens in `app/globals.css` (`navy`, `brand`, `page`). On phones the sidebar becomes a drawer behind the menu button.
 
 ## Setup
 
@@ -17,7 +21,7 @@ On Vercel, add the same variables under **Project Settings → Environment Varia
 ## How it works
 
 - `app/api/chat/route.ts` — the only server endpoint. Receives the conversation, streams Claude's reply back as newline-delimited JSON events (`text`, then `done` / `refusal` / `error`; see `lib/chat/protocol.ts`).
-- `components/ChatWindow.tsx` — the chat UI. It holds the conversation in memory and sends the whole history with each message. Assistant turns are stored exactly as the server returned them, including thinking blocks, because the API expects them back unchanged.
+- `components/ChatWindow.tsx` — the chat UI (header, sidebar/drawer, chat, input); `components/Sidebar.tsx` shows the saved location and employers; `components/Markdown.tsx` renders replies, styling job tables by column (navy header, green right-aligned pay, gray "Not listed", "View posting →" buttons, sideways scroll on phones). It holds the conversation in memory and sends the whole history with each message. Assistant turns are stored exactly as the server returned them, including thinking blocks, because the API expects them back unchanged.
 - `lib/agent/config.ts` — model (`claude-opus-5-5`), effort, and the server-side refusal fallback (`fallbacks: "default"`), which retries on another model if a safety classifier declines a request.
 - `lib/agent/systemPrompt.ts` — kept free of dates or per-user data so it stays in the prompt cache.
 - `lib/chat/history.ts` — validates what the browser sends, and prepares assistant content for echoing back.

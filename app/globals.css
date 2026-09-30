@@ -1,25 +1,42 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
-
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+/* Brand palette: deep navy for structure, emerald for highlights and actions. */
+@theme {
+  --color-navy: #0f2a44;
+  --color-navy-800: #163657;
+  --color-navy-700: #1f4468;
+  --color-navy-100: #e3e9f1;
+  --color-navy-50: #f1f4f8;
+  --color-page: #f8fafc;
+  --color-brand: #10b981;
+  --color-brand-600: #059669;
+  --color-brand-50: #ecfdf5;
+}
+
+:root {
+  color-scheme: light;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
+  background: var(--color-page);
+  color: #0f172a;
+}
+
+/* "Thinking" dots for the status line. */
+@keyframes ledger-dot {
+  0%, 80%, 100% { opacity: 0.25; transform: translateY(0); }
+  40% { opacity: 1; transform: translateY(-2px); }
+}
+.ledger-dot {
+  animation: ledger-dot 1.2s infinite ease-in-out;
+}
+.ledger-dot:nth-child(2) { animation-delay: 0.15s; }
+.ledger-dot:nth-child(3) { animation-delay: 0.3s; }
+
+@media (prefers-reduced-motion: reduce) {
+  .ledger-dot { animation: none; opacity: 0.7; }
 }

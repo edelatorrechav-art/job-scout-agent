@@ -145,7 +145,7 @@ export async function runFindOpenRoles(input: unknown, ctx: ToolContext): Promis
   const where = !filter ? "" : filter.place ? ` ${filter.place}${filter.remote ? " or remote" : ""}` : " remote";
   const readsPerCompany = filter ? Math.min(perCompany * 2, MAX_READS_PER_COMPANY_FILTERED) : perCompany;
   ctx.onStatus(
-    `Searching ${searchable.length} job board${searchable.length === 1 ? "" : "s"} for ${jobType} (${describeLocation(filter)})…`,
+    `Auditing ${searchable.length} job board${searchable.length === 1 ? "" : "s"} for ${jobType} (${describeLocation(filter)})…`,
   );
 
   // Shared across companies: page reads run a few at a time, and the total
@@ -172,7 +172,7 @@ export async function runFindOpenRoles(input: unknown, ctx: ToolContext): Promis
       return "failed";
     } finally {
       readCount++;
-      ctx.onStatus(`Reading postings (${readCount} read)…`);
+      ctx.onStatus(`Reconciling postings (${readCount} read)…`);
     }
   };
 
@@ -211,7 +211,7 @@ export async function runFindOpenRoles(input: unknown, ctx: ToolContext): Promis
 
     // 2. The board page itself, after its JavaScript renders.
     if (!gotPostings() && Date.now() < deadline) {
-      ctx.onStatus(`Opening the job board for ${employer.name}…`);
+      ctx.onStatus(`Inspecting the job board for ${employer.name}…`);
       try {
         const listed = await beforeDeadline(scrape(() => listPostings(employer.boardUrl, Math.max(wait, BOARD_RENDER_WAIT_MS))), deadline);
         tried.push("job board page");
