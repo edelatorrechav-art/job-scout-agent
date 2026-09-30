@@ -33,19 +33,23 @@ const components: Components = {
     />
   ),
   table: ({ node, ...props }) => (
-    <div className="my-2 overflow-x-auto">
+    <div className="my-3 overflow-x-auto rounded-lg border border-zinc-200 dark:border-zinc-700">
       <table className="w-full border-collapse text-sm" {...props} />
     </div>
   ),
-  th: ({ node, ...props }) => (
-    <th
-      className="border-b border-zinc-300 px-2 py-1 text-left font-semibold dark:border-zinc-600"
+  thead: ({ node, ...props }) => (
+    <thead className="bg-zinc-100 dark:bg-zinc-800" {...props} />
+  ),
+  tr: ({ node, ...props }) => (
+    <tr
+      className="border-b border-zinc-200 last:border-b-0 dark:border-zinc-700"
       {...props}
     />
   ),
-  td: ({ node, ...props }) => (
-    <td className="border-b border-zinc-200 px-2 py-1 dark:border-zinc-700" {...props} />
+  th: ({ node, ...props }) => (
+    <th className="whitespace-nowrap px-3 py-2 text-left font-semibold" {...props} />
   ),
+  td: ({ node, ...props }) => <td className="px-3 py-2 align-top" {...props} />,
 };
 /* eslint-enable @typescript-eslint/no-unused-vars */
 

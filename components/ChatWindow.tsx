@@ -14,9 +14,9 @@ interface Turn {
 }
 
 const EXAMPLES = [
+  "How do I negotiate a higher base salary?",
   "How should I tailor my resume for a product manager role?",
   "What questions should I ask at the end of an interview?",
-  "What does a solutions engineer do?",
 ];
 
 export function ChatWindow() {
@@ -105,10 +105,10 @@ export function ChatWindow() {
       <main className="flex-1 overflow-y-auto px-4 py-6">
         {turns.length === 0 ? (
           <div className="mt-16 text-center">
-            <p className="text-2xl font-semibold">Find your next role</p>
+            <p className="text-2xl font-semibold">Let&apos;s close the books on your job search</p>
             <p className="mt-2 text-zinc-500">
               Job search across your chosen companies is coming soon. For now, ask
-              me anything about your job hunt.
+              me anything about your job hunt. I&apos;ll keep an eye on the pay.
             </p>
             <div className="mt-8 flex flex-col items-center gap-2">
               {EXAMPLES.map((example) => (
@@ -133,7 +133,7 @@ export function ChatWindow() {
                   className={
                     turn.role === "user"
                       ? "max-w-[85%] whitespace-pre-wrap rounded-2xl bg-blue-600 px-4 py-2 text-white"
-                      : "max-w-full leading-relaxed"
+                      : "w-full min-w-0 leading-relaxed"
                   }
                 >
                   {turn.role === "user" ? (
