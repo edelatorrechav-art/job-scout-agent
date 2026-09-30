@@ -4,6 +4,16 @@ export function firecrawlConfigured(): boolean {
   return Boolean(process.env.FIRECRAWL_API_KEY);
 }
 
+function client() {
+  return new Firecrawl({ apiKey: process.env.FIRECRAWL_API_KEY, maxRetries: 1 });
+}
+
+/**
+ * Milliseconds to let a page's JavaScript render before reading it. Firecrawl
+ * waits this long after load; the request timeout grows to match.
+ */
+export type RenderWait = number;
+
 export interface ExtractedPosting {
   isJobPosting: boolean;
   title: string | null;
@@ -25,16 +35,15 @@ const POSTING_SCHEMA = {
     },
     pay: {
       type: ["string", "null"],
-      description: "Compensation exactly as the posting states it, with currency and period (e.g. \"$120,000 - $150,000 per year\"). Null if the posting does not state pay. Never estimate.",
+      description: "Compensation exactly as the posting states it, with currency and period (e.g. \"$120,000 - $150,000 per year\", \"$18.50/hour\"). Null if the posting does not state pay. Never estimate.",
     },
   },
   required: ["isJobPosting", "title", "location", "pay"],
 };
 
-/** Reads one posting page with Firecrawl and extracts its key fields. */
-export async function extractPosting(url: string): Promise<ExtractedPosting> {
-  const client = new Firecrawl({ apiKey: process.env.FIRECRAWL_API_KEY, maxRetries: 1 });
-  const doc = await client.scrape(url, {
+/** Reads one posting page and extracts its key fields. */
+export async function extractPosting(url: string, waitFor: RenderWait = 0): Promise<ExtractedPosting> {
+  const doc = await client().scrape(url, {
     formats: [
       {
         type: "json",
@@ -43,20 +52,96 @@ export async function extractPosting(url: string): Promise<ExtractedPosting> {
       },
     ],
     onlyMainContent: true,
-    timeout: 25_000, // ms
+    ...(waitFor > 0 ? { waitFor } : {}),
+    timeout: 25_000 + waitFor, // ms
     autoResume: false,
   });
-  return normalize(doc.json);
-}
-
-function normalize(json: unknown): ExtractedPosting {
-  const j = (typeof json === "object" && json !== null ? json : {}) as Record<string, unknown>;
-  const text = (v: unknown, max: number) =>
-    typeof v === "string" && v.trim() ? v.replace(/\s+/g, " ").trim().slice(0, max) : null;
+  const j = asRecord(doc.json);
   return {
     isJobPosting: j.isJobPosting === true,
-    title: text(j.title, 150),
-    location: text(j.location, 120),
-    pay: text(j.pay, 120),
+    title: cleanText(j.title, 150),
+    location: cleanText(j.location, 120),
+    pay: cleanText(j.pay, 120),
   };
+}
+
+export interface ListedPosting {
+  title: string;
+  location: string | null;
+  url: string;
+}
+
+const LISTING_SCHEMA = {
+  type: "object",
+  properties: {
+    postings: {
+      type: "array",
+      description: "Every individual job posting listed on this page.",
+      items: {
+        type: "object",
+        properties: {
+          title: { type: "string" },
+          location: { type: ["string", "null"] },
+          url: { type: "string", description: "The link to the posting's own page." },
+        },
+        required: ["title", "location", "url"],
+      },
+    },
+  },
+  required: ["postings"],
+};
+
+/**
+ * Reads a job board or search results page (after its JavaScript renders)
+ * and lists the postings on it. Relative links are resolved against the page.
+ */
+export async function listPostings(pageUrl: string, waitFor: RenderWait): Promise<ListedPosting[]> {
+  const doc = await client().scrape(pageUrl, {
+    formats: [
+      {
+        type: "json",
+        schema: LISTING_SCHEMA,
+        prompt: "List every individual job posting shown on this page with its title, location, and link. Return an empty list if no postings are shown.",
+      },
+    ],
+    waitFor,
+    timeout: 30_000 + waitFor,
+    autoResume: false,
+  });
+  const raw = asRecord(doc.json).postings;
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((item) => {
+    const p = asRecord(item);
+    const title = cleanText(p.title, 150);
+    const url = typeof p.url === "string" ? absoluteUrl(p.url, pageUrl) : null;
+    return title && url ? [{ title, location: cleanText(p.location, 120), url }] : [];
+  });
+}
+
+/** Every link on a page, after its JavaScript renders. */
+export async function pageLinks(pageUrl: string, waitFor: RenderWait): Promise<string[]> {
+  const doc = await client().scrape(pageUrl, {
+    formats: ["links"],
+    waitFor,
+    timeout: 25_000 + waitFor,
+    autoResume: false,
+  });
+  return (doc.links ?? []).flatMap((l) => absoluteUrl(l, pageUrl) ?? []);
+}
+
+function absoluteUrl(href: string, base: string): string | null {
+  try {
+    const url = new URL(href, base);
+    return url.protocol === "https:" ? url.toString() : null;
+  } catch {
+    return null;
+  }
+}
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
+}
+
+function cleanText(v: unknown, max: number): string | null {
+  return typeof v === "string" && v.trim() ? v.replace(/\s+/g, " ").trim().slice(0, max) : null;
 }

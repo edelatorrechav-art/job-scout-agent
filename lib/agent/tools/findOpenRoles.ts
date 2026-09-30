@@ -1,10 +1,11 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import type { ToolContext, ToolOutcome } from "@/lib/agent/tools/types";
-import { isOnBoard, searchDomain } from "@/lib/jobs/boardScope";
-import { extractPosting, firecrawlConfigured } from "@/lib/services/firecrawl";
+import { atsAccountMatches, namesMatch, NON_BOARD_DOMAINS, registrableDomain } from "@/lib/employers/boardResolver";
+import { isOnBoard, renderWait, searchDomain, type BoardRef } from "@/lib/jobs/boardScope";
+import { extractPosting, firecrawlConfigured, listPostings } from "@/lib/services/firecrawl";
 import { searchUrls, tavilyConfigured } from "@/lib/services/tavily";
-import { beforeDeadline, DeadlineError, mapWithLimit } from "@/lib/util/async";
-import { companyKey, type Employer } from "@/lib/employers/types";
+import { beforeDeadline, createLimiter, DeadlineError, mapWithLimit } from "@/lib/util/async";
+import { nameVariants, sameCompany, searchName, type Employer } from "@/lib/employers/types";
 import { matchLocation } from "@/lib/location/match";
 import { describeLocation, parseLocation, type LocationPref } from "@/lib/location/types";
 
@@ -20,6 +21,10 @@ const TIME_BUDGET_MS = 75_000;
 const MAX_JOB_TYPE_CHARS = 100;
 // With a location filter some postings get dropped, so read extra per company.
 const MAX_READS_PER_COMPANY_FILTERED = 15;
+// Render waits (ms) for JavaScript-built pages: a board's listing page, and
+// the retry for a posting page that came back empty.
+const BOARD_RENDER_WAIT_MS = 5000;
+const LONG_RENDER_WAIT_MS = 7000;
 
 export const findOpenRolesTool: Anthropic.Beta.BetaTool = {
   name: "find_open_roles",
@@ -78,8 +83,18 @@ interface Posting {
   url: string;
 }
 
+type ReadOutcome = Posting | "not-a-posting" | "failed" | "timed-out";
+
 interface CompanyReport {
   company: string;
+  /**
+   * ok: postings found. no-matching-roles: the board was read, nothing fit.
+   * board-unreadable: we couldn't see the company's openings at all.
+   */
+  status: "ok" | "no-matching-roles" | "board-unreadable";
+  reason?: string;
+  boardUrl: string;
+  searched: string[];
   postings: Posting[];
   note?: string;
   droppedByLocation?: { elsewhere?: number; remote?: number; locationNotListed?: number };
@@ -104,10 +119,10 @@ export async function runFindOpenRoles(input: unknown, ctx: ToolContext): Promis
   const skipped: { company: string; reason: string }[] = [];
   let targets: Employer[] = ctx.employers;
   if (parsed.companies) {
-    const keys = new Set(parsed.companies.map(companyKey));
-    targets = ctx.employers.filter((e) => keys.has(companyKey(e.name)));
-    for (const name of parsed.companies) {
-      if (!ctx.employers.some((e) => companyKey(e.name) === companyKey(name))) {
+    const wanted = parsed.companies;
+    targets = ctx.employers.filter((e) => wanted.some((n) => sameCompany(e.name, n)));
+    for (const name of wanted) {
+      if (!ctx.employers.some((e) => sameCompany(e.name, name))) {
         skipped.push({ company: name, reason: "not on the saved list" });
       }
     }
@@ -133,70 +148,105 @@ export async function runFindOpenRoles(input: unknown, ctx: ToolContext): Promis
     `Searching ${searchable.length} job board${searchable.length === 1 ? "" : "s"} for ${jobType} (${describeLocation(filter)})…`,
   );
 
-  // 1. Find candidate posting URLs on each board.
-  const candidates = await mapWithLimit(searchable, SEARCH_CONCURRENCY, async (employer) => {
+  // Shared across companies: page reads run a few at a time, and the total
+  // number of postings read is capped.
+  const scrape = createLimiter(SCRAPE_CONCURRENCY);
+  let readBudget = MAX_TOTAL_POSTINGS;
+  let readCount = 0;
+  let capped = false;
+
+  const readPosting = async (url: string, wait: number): Promise<ReadOutcome> => {
     try {
-      const hosted = employer.atsType !== "company-site";
+      let p = await beforeDeadline(scrape(() => extractPosting(url, wait)), deadline);
+      // Nothing extracted: the page may not have finished rendering. Try once
+      // more with a longer wait if there's time.
+      if (!p.isJobPosting && !p.title && deadline - Date.now() > 20_000) {
+        p = await beforeDeadline(scrape(() => extractPosting(url, LONG_RENDER_WAIT_MS)), deadline);
+      }
+      if (!p.isJobPosting || !p.title) return "not-a-posting";
+      // Always the URL we read, never a link taken from the page.
+      return { title: p.title, location: p.location ?? "Not listed", pay: p.pay ?? "Not listed", url };
+    } catch (error) {
+      if (error instanceof DeadlineError) return "timed-out";
+      console.error(`could not read ${url}`, error);
+      return "failed";
+    } finally {
+      readCount++;
+      ctx.onStatus(`Reading postings (${readCount} read)…`);
+    }
+  };
+
+  const companies: CompanyReport[] = await mapWithLimit(searchable, SEARCH_CONCURRENCY, async (employer) => {
+    const ref = { name: employer.name, boardUrl: employer.boardUrl, atsType: employer.atsType };
+    const wait = renderWait(employer.atsType);
+    const query = `${searchName(employer.name)} ${jobType}${where} job`;
+    const tried: string[] = [];
+    const seen = new Set<string>();
+    const outcomes: ReadOutcome[] = [];
+    let boardListing: "listed" | "empty" | "failed" | "not-tried" = "not-tried";
+    let searchFailed = false;
+
+    const readAll = async (urls: string[]) => {
+      const fresh = urls.filter((u) => !seen.has(u)).slice(0, readsPerCompany);
+      fresh.forEach((u) => seen.add(u));
+      const allowed = fresh.slice(0, Math.max(readBudget, 0));
+      readBudget -= allowed.length;
+      if (allowed.length < fresh.length) capped = true;
+      outcomes.push(...(await Promise.all(allowed.map((u) => readPosting(u, wait)))));
+    };
+    const gotPostings = () => outcomes.some((o) => typeof o === "object");
+
+    // 1. Search engine results on the board's own domain.
+    try {
       const urls = await beforeDeadline(
-        searchUrls(`${employer.name} ${jobType}${where} job`, {
-          includeDomains: [searchDomain(employer.boardUrl)],
-          maxResults: Math.min(readsPerCompany * 2, 20),
-        }),
+        searchUrls(query, { includeDomains: [searchDomain(employer.boardUrl)], maxResults: Math.min(readsPerCompany * 2, 20) }),
         deadline,
       );
-      const onBoard = [...new Set(urls.filter((u) => isOnBoard(u, employer.boardUrl, hosted)))];
-      return { employer, urls: onBoard.slice(0, readsPerCompany), failed: false };
+      tried.push("job board search");
+      await readAll(urls.filter((u) => isOnBoard(u, ref)));
     } catch (error) {
       if (!(error instanceof DeadlineError)) console.error(`search failed for ${employer.name}`, error);
-      return { employer, urls: [] as string[], failed: true };
+      searchFailed = true;
     }
-  });
 
-  // Spread the overall cap across companies in order.
-  let budget = MAX_TOTAL_POSTINGS;
-  const jobs = candidates.flatMap((c) => {
-    const take = c.urls.slice(0, Math.max(budget, 0));
-    budget -= take.length;
-    return take.map((url) => ({ company: c.employer.name, url }));
-  });
-  const capped = candidates.reduce((n, c) => n + c.urls.length, 0) > jobs.length;
-
-  // 2. Read each posting.
-  let done = 0;
-  if (jobs.length > 0) ctx.onStatus(`Reading ${jobs.length} posting${jobs.length === 1 ? "" : "s"}…`);
-  const extracted = await mapWithLimit(jobs, SCRAPE_CONCURRENCY, async (job) => {
-    let outcome: Posting | "not-a-posting" | "failed" | "timed-out";
-    try {
-      const p = await beforeDeadline(extractPosting(job.url), deadline);
-      outcome =
-        p.isJobPosting && p.title
-          ? {
-              title: p.title,
-              location: p.location ?? "Not listed",
-              pay: p.pay ?? "Not listed",
-              // Always the URL we read, never a link taken from the page.
-              url: job.url,
-            }
-          : "not-a-posting";
-    } catch (error) {
-      if (error instanceof DeadlineError) outcome = "timed-out";
-      else {
-        console.error(`could not read ${job.url}`, error);
-        outcome = "failed";
+    // 2. The board page itself, after its JavaScript renders.
+    if (!gotPostings() && Date.now() < deadline) {
+      ctx.onStatus(`Opening the job board for ${employer.name}…`);
+      try {
+        const listed = await beforeDeadline(scrape(() => listPostings(employer.boardUrl, Math.max(wait, BOARD_RENDER_WAIT_MS))), deadline);
+        tried.push("job board page");
+        boardListing = listed.length > 0 ? "listed" : "empty";
+        const relevant = listed.filter(
+          (p) =>
+            isOnBoard(p.url, ref) &&
+            titleMatches(p.title, jobType) &&
+            // Skip listings whose shown location already rules them out.
+            !(filter && p.location && ["elsewhere", "remote-excluded"].includes(matchLocation(p.location, filter))),
+        );
+        await readAll(relevant.map((p) => p.url));
+      } catch (error) {
+        if (!(error instanceof DeadlineError)) console.error(`could not read board ${employer.boardUrl}`, error);
+        boardListing = "failed";
       }
     }
-    done++;
-    ctx.onStatus(`Reading postings (${done}/${jobs.length})…`);
-    return { ...job, outcome };
-  });
 
-  // 3. Assemble per-company results.
-  const companies: CompanyReport[] = candidates.map(({ employer, failed }) => {
-    const mine = extracted.filter((e) => e.company === employer.name);
-    const read = mine.flatMap((e) => (typeof e.outcome === "object" ? [e.outcome] : []));
-    const unread = mine.filter((e) => e.outcome === "failed" || e.outcome === "timed-out").length;
+    // 3. A web-wide search for individual postings from this company.
+    if (!gotPostings() && Date.now() < deadline) {
+      try {
+        const urls = await beforeDeadline(
+          searchUrls(query, { excludeDomains: NON_BOARD_DOMAINS, maxResults: 10 }),
+          deadline,
+        );
+        tried.push("web search");
+        await readAll(urls.filter((u) => isCompanyPosting(u, ref)));
+      } catch (error) {
+        if (!(error instanceof DeadlineError)) console.error(`web search failed for ${employer.name}`, error);
+      }
+    }
 
     // Location filter, then the per-company limit.
+    const read = outcomes.flatMap((o) => (typeof o === "object" ? [o] : []));
+    const unread = outcomes.filter((o) => o === "failed" || o === "timed-out").length;
     const dropped = { elsewhere: 0, remote: 0, locationNotListed: 0 };
     const kept = filter
       ? read.filter((p) => {
@@ -209,15 +259,37 @@ export async function runFindOpenRoles(input: unknown, ctx: ToolContext): Promis
       : read;
     const postings = kept.slice(0, perCompany);
 
+    // Could we actually see this company's openings? Only then is "no
+    // matching roles" a fair statement.
+    let status: CompanyReport["status"];
+    let reason: string | undefined;
+    if (postings.length > 0) status = "ok";
+    else if (read.length > 0 || boardListing === "listed") status = "no-matching-roles";
+    else {
+      status = "board-unreadable";
+      reason =
+        outcomes.length > 0
+          ? "found posting pages but none could be read"
+          : boardListing === "empty"
+            ? "the job board page showed no listings, even after waiting for it to load"
+            : boardListing === "failed"
+              ? "the job board page couldn't be loaded"
+              : searchFailed
+                ? "the job board search failed"
+                : "no postings could be found or read";
+    }
+
     const notes: string[] = [];
-    if (failed) notes.push("the job board search failed or timed out");
-    else if (mine.length === 0) notes.push("no matching postings found on the job board");
-    else if (filter && postings.length === 0 && read.length > 0) notes.push("no postings in the requested location");
-    if (unread > 0) notes.push(`${unread} posting(s) couldn't be read`);
+    if (status === "no-matching-roles" && filter && read.length > 0) notes.push("no postings in the requested location");
+    if (unread > 0) notes.push(`${unread} posting page(s) couldn't be read`);
     const droppedByLocation = Object.fromEntries(Object.entries(dropped).filter(([, n]) => n > 0));
     return {
       company: employer.name,
+      status,
+      boardUrl: employer.boardUrl,
       postings,
+      searched: tried,
+      ...(reason ? { reason } : {}),
       ...(notes.length ? { note: notes.join("; ") } : {}),
       ...(Object.keys(droppedByLocation).length ? { droppedByLocation } : {}),
     };
@@ -275,4 +347,36 @@ function resolveLocation(
   }
   if (input.includeRemote) return { filter: { place: null, remote: true }, source: "this request" };
   return { filter: null, source: "none set" };
+}
+
+/**
+ * True if a web search result is plausibly this company's own posting: on its
+ * board, on a hosted job board under its name, or on a domain named after it.
+ */
+function isCompanyPosting(url: string, ref: BoardRef): boolean {
+  if (isOnBoard(url, ref)) return true;
+  let u: URL;
+  try {
+    u = new URL(url);
+  } catch {
+    return false;
+  }
+  if (u.protocol !== "https:") return false;
+  if (atsAccountMatches(u, ref.name)) return true;
+  const domainName = registrableDomain(u.hostname).split(".")[0];
+  return namesMatch(nameVariants(ref.name), domainName) && /job|career|position|opening|requisition/i.test(u.href);
+}
+
+const TITLE_STOPWORDS = new Set(["job", "jobs", "role", "roles", "position", "positions", "opening", "openings", "the", "and", "for", "with"]);
+
+/**
+ * Loose check that a listed title fits the requested job type: any
+ * significant word of the job type appears in the title (by its first five
+ * letters, so "analyst" matches "Analytics"… and "driver" matches "Drivers").
+ */
+function titleMatches(title: string, jobType: string): boolean {
+  const words = jobType.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length >= 3 && !TITLE_STOPWORDS.has(w));
+  if (words.length === 0) return true;
+  const t = title.toLowerCase();
+  return words.some((w) => t.includes(w.slice(0, 5)));
 }
