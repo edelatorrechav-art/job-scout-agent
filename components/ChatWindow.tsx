@@ -1,9 +1,11 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { EmployerBar } from "@/components/EmployerBar";
 import { Markdown } from "@/components/Markdown";
 import { streamChat } from "@/lib/chat/client";
 import type { MessageParam } from "@/lib/chat/protocol";
+import { getEmployers, saveEmployers, useEmployers } from "@/lib/employers/store";
 
 interface Turn {
   id: number;
@@ -11,9 +13,12 @@ interface Turn {
   text: string;
   status: "streaming" | "done" | "stopped" | "failed";
   note?: string;
+  /** Tool progress shown while streaming, e.g. "Looking up job boards…" */
+  progress?: string;
 }
 
 const EXAMPLES = [
+  "Track Stripe, Airbnb, and Datadog",
   "How do I negotiate a higher base salary?",
   "How should I tailor my resume for a product manager role?",
   "What questions should I ask at the end of an interview?",
@@ -26,6 +31,7 @@ export function ChatWindow() {
   const [turns, setTurns] = useState<Turn[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
+  const employers = useEmployers();
   const abortRef = useRef<AbortController | null>(null);
   const nextId = useRef(0);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -58,12 +64,19 @@ export function ChatWindow() {
     try {
       const result = await streamChat(
         messages,
-        (chunk) => updateTurn(replyId, (t) => ({ text: t.text + chunk })),
+        getEmployers(),
+        {
+          onText: (chunk) =>
+            updateTurn(replyId, (t) => ({ text: t.text + chunk, progress: undefined })),
+          onStatus: (progress) => updateTurn(replyId, () => ({ progress })),
+          // Saved right away, even if the reply later fails: the change happened.
+          onEmployers: saveEmployers,
+        },
         controller.signal,
       );
       if (result.type === "done") {
         setHistory([...messages, ...result.messages]);
-        updateTurn(replyId, () => ({ status: "done" }));
+        updateTurn(replyId, () => ({ status: "done", progress: undefined }));
       } else {
         const note =
           result.type === "refusal"
@@ -71,11 +84,11 @@ export function ChatWindow() {
             : result.message;
         // A declined or failed reply isn't kept, so drop any partial text and
         // give the user their message back to retry.
-        updateTurn(replyId, () => ({ text: "", status: "failed", note }));
+        updateTurn(replyId, () => ({ text: "", status: "failed", note, progress: undefined }));
         setInput((current) => current || text);
       }
     } catch {
-      updateTurn(replyId, () => ({ status: "stopped", note: "Stopped." }));
+      updateTurn(replyId, () => ({ status: "stopped", note: "Stopped.", progress: undefined }));
     } finally {
       abortRef.current = null;
       setBusy(false);
@@ -101,14 +114,19 @@ export function ChatWindow() {
           New chat
         </button>
       </header>
+      <EmployerBar
+        employers={employers}
+        disabled={busy}
+        onRemove={(name) => saveEmployers(employers.filter((e) => e.name !== name))}
+      />
 
       <main className="flex-1 overflow-y-auto px-4 py-6">
         {turns.length === 0 ? (
           <div className="mt-16 text-center">
             <p className="text-2xl font-semibold">Let&apos;s close the books on your job search</p>
             <p className="mt-2 text-zinc-500">
-              Job search across your chosen companies is coming soon. For now, ask
-              me anything about your job hunt. I&apos;ll keep an eye on the pay.
+              Tell me which companies to track and I&apos;ll find their job boards.
+              Job search across them is coming soon. I&apos;ll keep an eye on the pay.
             </p>
             <div className="mt-8 flex flex-col items-center gap-2">
               {EXAMPLES.map((example) => (
@@ -136,13 +154,12 @@ export function ChatWindow() {
                       : "w-full min-w-0 leading-relaxed"
                   }
                 >
-                  {turn.role === "user" ? (
-                    turn.text
-                  ) : turn.text ? (
-                    <Markdown text={turn.text} />
-                  ) : turn.status === "streaming" ? (
-                    <span className="animate-pulse text-zinc-400">Thinking…</span>
-                  ) : null}
+                  {turn.role === "user" ? turn.text : turn.text && <Markdown text={turn.text} />}
+                  {turn.status === "streaming" && (turn.progress || !turn.text) && (
+                    <p className="mt-1 animate-pulse text-sm text-zinc-400">
+                      {turn.progress ?? "Thinking…"}
+                    </p>
+                  )}
                   {turn.note && (
                     <p
                       className={

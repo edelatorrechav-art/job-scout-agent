@@ -1,4 +1,11 @@
 import type { ChatEvent, MessageParam } from "@/lib/chat/protocol";
+import type { Employer } from "@/lib/employers/types";
+
+export interface ChatHandlers {
+  onText: (text: string) => void;
+  onStatus: (text: string) => void;
+  onEmployers: (employers: Employer[]) => void;
+}
 
 export type ChatResult =
   | { type: "done"; messages: MessageParam[] }
@@ -6,12 +13,14 @@ export type ChatResult =
   | { type: "error"; message: string };
 
 /**
- * Sends the conversation to /api/chat, calling onText for each streamed piece
- * of the reply. Resolves with how the turn ended. Throws only on abort.
+ * Sends the conversation and saved employer list to /api/chat, calling the
+ * handlers as events stream in. Resolves with how the turn ended. Throws only
+ * on abort.
  */
 export async function streamChat(
   messages: MessageParam[],
-  onText: (text: string) => void,
+  employers: Employer[],
+  handlers: ChatHandlers,
   signal: AbortSignal,
 ): Promise<ChatResult> {
   let response: Response;
@@ -19,7 +28,7 @@ export async function streamChat(
     response = await fetch("/api/chat", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ messages }),
+      body: JSON.stringify({ messages, employers }),
       signal,
     });
   } catch (error) {
@@ -46,7 +55,9 @@ export async function streamChat(
     for (const line of lines) {
       if (!line.trim()) continue;
       const event = JSON.parse(line) as ChatEvent;
-      if (event.type === "text") onText(event.text);
+      if (event.type === "text") handlers.onText(event.text);
+      else if (event.type === "status") handlers.onStatus(event.text);
+      else if (event.type === "employers") handlers.onEmployers(event.employers);
       else return event;
     }
   }

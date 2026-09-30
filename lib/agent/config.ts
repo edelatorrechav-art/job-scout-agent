@@ -18,3 +18,6 @@ export const FALLBACKS = "default" as const;
 // Guardrails on what the browser may send us.
 export const MAX_HISTORY_MESSAGES = 100;
 export const MAX_USER_MESSAGE_CHARS = 8000;
+
+// Upper bound on Claude ⇄ tool round trips per user message.
+export const MAX_TOOL_ROUNDS = 6;

@@ -4,14 +4,18 @@ import {
   EFFORT,
   FALLBACKS,
   MAX_TOKENS,
+  MAX_TOOL_ROUNDS,
   MODEL,
 } from "@/lib/agent/config";
 import { SYSTEM_PROMPT } from "@/lib/agent/systemPrompt";
+import { runTool, TOOLS } from "@/lib/agent/tools";
+import { employerContextMessage, lastEmployerContext } from "@/lib/chat/employerContext";
 import { echoableContent, validateHistory } from "@/lib/chat/history";
-import type { ChatEvent, ChatRequest } from "@/lib/chat/protocol";
+import type { ChatEvent, ChatRequest, MessageParam } from "@/lib/chat/protocol";
+import { isEmployerList, type Employer } from "@/lib/employers/types";
 
 export const runtime = "nodejs";
-// Room for long answers now and tool calls later. Vercel caps this per plan.
+// Room for tool calls (job board lookups). Vercel caps this per plan.
 export const maxDuration = 60;
 
 const client = new Anthropic();
@@ -32,6 +36,9 @@ export async function POST(request: Request) {
   }
   const problem = validateHistory(body?.messages);
   if (problem) return Response.json({ error: problem }, { status: 400 });
+  if (!isEmployerList(body.employers ?? [])) {
+    return Response.json({ error: "The saved employer list is invalid." }, { status: 400 });
+  }
 
   const encoder = new TextEncoder();
   const stream = new ReadableStream<Uint8Array>({
@@ -40,42 +47,7 @@ export async function POST(request: Request) {
         controller.enqueue(encoder.encode(JSON.stringify(event) + "\n"));
 
       try {
-        const claude = client.beta.messages.stream(
-          {
-            model: MODEL,
-            max_tokens: MAX_TOKENS,
-            betas: BETAS,
-            fallbacks: FALLBACKS,
-            output_config: { effort: EFFORT },
-            // Caches the conversation prefix so each follow-up turn only pays
-            // full price for what's new.
-            cache_control: { type: "ephemeral" },
-            system: SYSTEM_PROMPT,
-            messages: body.messages,
-          },
-          { signal: request.signal },
-        );
-
-        for await (const event of claude) {
-          if (
-            event.type === "content_block_delta" &&
-            event.delta.type === "text_delta"
-          ) {
-            send({ type: "text", text: event.delta.text });
-          }
-        }
-
-        const message = await claude.finalMessage();
-        if (message.stop_reason === "refusal") {
-          send({ type: "refusal" });
-        } else {
-          send({
-            type: "done",
-            messages: [
-              { role: "assistant", content: echoableContent(message.content) },
-            ],
-          });
-        }
+        await runAgent(body.messages, body.employers ?? [], send, request.signal);
       } catch (error) {
         if (!request.signal.aborted) {
           console.error("chat request failed", error);
@@ -93,6 +65,94 @@ export async function POST(request: Request) {
       "Cache-Control": "no-store",
     },
   });
+}
+
+/**
+ * Runs Claude with tools until it gives a final answer. Everything appended
+ * to the conversation goes back to the browser in the `done` event.
+ */
+async function runAgent(
+  history: MessageParam[],
+  initialEmployers: Employer[],
+  send: (event: ChatEvent) => void,
+  signal: AbortSignal,
+) {
+  let employers = initialEmployers;
+  const added: MessageParam[] = [];
+
+  // Tell Claude the current employer list, but only when it changed since the
+  // last time it was stated (the user can edit it outside the chat).
+  const context = employerContextMessage(employers);
+  if (context.content !== lastEmployerContext(history)) added.push(context);
+
+  let sentText = false;
+  for (let round = 0; round < MAX_TOOL_ROUNDS; round++) {
+    const claude = client.beta.messages.stream(
+      {
+        model: MODEL,
+        max_tokens: MAX_TOKENS,
+        betas: BETAS,
+        fallbacks: FALLBACKS,
+        output_config: { effort: EFFORT },
+        // Caches the conversation prefix so each follow-up turn only pays
+        // full price for what's new.
+        cache_control: { type: "ephemeral" },
+        system: SYSTEM_PROMPT,
+        tools: TOOLS,
+        messages: [...history, ...added],
+      },
+      { signal },
+    );
+
+    let startedThisRound = false;
+    for await (const event of claude) {
+      if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
+        // Separate text from different rounds (before and after a tool call).
+        const prefix = sentText && !startedThisRound ? "\n\n" : "";
+        startedThisRound = sentText = true;
+        send({ type: "text", text: prefix + event.delta.text });
+      }
+    }
+
+    const message = await claude.finalMessage();
+    if (message.stop_reason === "refusal") {
+      send({ type: "refusal" });
+      return;
+    }
+
+    const content = echoableContent(message.content);
+    added.push({ role: "assistant", content });
+
+    const toolUses = content.filter(
+      (b): b is Anthropic.Beta.BetaToolUseBlock => b.type === "tool_use",
+    );
+    if (toolUses.length === 0) break;
+    if (message.stop_reason === "max_tokens") {
+      throw new Error("tool call was cut off at max_tokens");
+    }
+
+    // Run sequentially: each call sees the list as the previous one left it.
+    const results: Anthropic.Beta.BetaToolResultBlockParam[] = [];
+    for (const use of toolUses) {
+      const outcome = await runTool(use.name, use.input, {
+        employers,
+        onStatus: (text) => send({ type: "status", text }),
+      });
+      if (outcome.employers) {
+        employers = outcome.employers;
+        send({ type: "employers", employers });
+      }
+      results.push({
+        type: "tool_result",
+        tool_use_id: use.id,
+        content: outcome.content,
+        ...(outcome.isError ? { is_error: true } : {}),
+      });
+    }
+    added.push({ role: "user", content: results });
+  }
+
+  send({ type: "done", messages: added });
 }
 
 function describeError(error: unknown): string {

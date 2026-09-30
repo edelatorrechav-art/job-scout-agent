@@ -1,5 +1,6 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import { MAX_HISTORY_MESSAGES, MAX_USER_MESSAGE_CHARS } from "@/lib/agent/config";
+import { EMPLOYER_CONTEXT_PREFIX } from "@/lib/chat/employerContext";
 import type { MessageParam } from "@/lib/chat/protocol";
 
 type ContentBlock = Anthropic.Beta.BetaContentBlock;
@@ -20,20 +21,32 @@ export function validateHistory(messages: unknown): string | null {
     if (typeof m !== "object" || m === null) return `messages[${i}] is invalid`;
     const { role, content } = m as { role?: unknown; content?: unknown };
     if (role === "user") {
-      if (typeof content !== "string" || content.trim() === "") {
+      if (Array.isArray(content)) {
+        // Tool results from an earlier turn.
+        if (!content.every((b) => b?.type === "tool_result")) {
+          return `messages[${i}] may only contain tool results`;
+        }
+      } else if (typeof content !== "string" || content.trim() === "") {
         return `messages[${i}] must have text content`;
-      }
-      if (content.length > MAX_USER_MESSAGE_CHARS) {
+      } else if (content.length > MAX_USER_MESSAGE_CHARS) {
         return `Messages are limited to ${MAX_USER_MESSAGE_CHARS} characters.`;
       }
     } else if (role === "assistant") {
       if (!Array.isArray(content)) return `messages[${i}] content must be an array`;
+    } else if (role === "system") {
+      // Only the app's own employer-list messages.
+      if (typeof content !== "string" || !content.startsWith(EMPLOYER_CONTEXT_PREFIX)) {
+        return `messages[${i}] is not a recognized system message`;
+      }
     } else {
       return `messages[${i}] has an unknown role`;
     }
   }
   if ((messages[0] as MessageParam).role !== "user") return "the first message must be from the user";
-  if ((messages.at(-1) as MessageParam).role !== "user") return "the last message must be from the user";
+  const last = messages.at(-1) as MessageParam;
+  if (last.role !== "user" || typeof last.content !== "string") {
+    return "the last message must be the user's new message";
+  }
   return null;
 }
 
